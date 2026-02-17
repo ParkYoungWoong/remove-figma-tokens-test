@@ -1,0 +1,151 @@
+# =============================================================================
+# Figma Variables → Design Tokens 동기화 워크플로우
+# 
+# 사용법: GitHub Actions 탭 → "Sync Figma Variables to Tokens" → Run workflow
+# 필요한 Secrets:
+#   - FIGMA_PAT: Figma Personal Access Token (file_variables:read 스코프)
+# =============================================================================
+
+name: Sync Figma Variables to Tokens
+
+on:
+  workflow_dispatch:
+    inputs:
+      figma_file_key:
+        description: 'Figma 파일 키 (URL에서 /file/ 뒤의 값)'
+        required: true
+        type: string
+      branch_prefix:
+        description: '브랜치 접두사'
+        required: false
+        default: 'figma/token-update'
+        type: string
+      base_branch:
+        description: 'PR 대상 브랜치'
+        required: false
+        default: 'main'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-tokens:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. 체크아웃 & Node.js 설정
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_branch }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # -----------------------------------------------------------------------
+      # 2. Figma에서 변수 가져오기 & 토큰 파일 생성
+      # -----------------------------------------------------------------------
+      - name: Fetch Figma variables and generate tokens
+        env:
+          FIGMA_PAT: ${{ secrets.FIGMA_PAT }}
+          FIGMA_FILE_KEY: ${{ inputs.figma_file_key }}
+        run: node scripts/sync-figma-to-tokens.js
+
+      # -----------------------------------------------------------------------
+      # 3. 변경사항 확인
+      # -----------------------------------------------------------------------
+      - name: Check for changes
+        id: changes
+        run: |
+          git add -A tokens/
+          if git diff --cached --quiet; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "✅ 변경사항 없음 - Figma 변수와 토큰이 이미 동기화되어 있습니다."
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "🔄 변경사항 감지됨!"
+            echo ""
+            echo "--- 변경된 파일 ---"
+            git diff --cached --name-only
+            echo ""
+            echo "--- 변경 요약 ---"
+            git diff --cached --stat
+          fi
+
+      # -----------------------------------------------------------------------
+      # 4. 브랜치 생성 & 커밋 & PR
+      # -----------------------------------------------------------------------
+      - name: Create branch, commit, and open PR
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 타임스탬프로 유니크한 브랜치 이름 생성
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BRANCH_NAME="${{ inputs.branch_prefix }}-${TIMESTAMP}"
+
+          # Git 설정
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 브랜치 생성 & 커밋
+          git checkout -b "$BRANCH_NAME"
+          git commit -m "chore(tokens): sync design tokens from Figma
+
+          - Figma 파일: ${{ inputs.figma_file_key }}
+          - 동기화 시간: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          - 트리거: @${{ github.actor }}"
+
+          git push origin "$BRANCH_NAME"
+
+          # 변경 요약 생성
+          DIFF_SUMMARY=$(git diff ${{ inputs.base_branch }}..HEAD --stat)
+          CHANGED_FILES=$(git diff ${{ inputs.base_branch }}..HEAD --name-only)
+
+          # PR 생성
+          gh pr create \
+            --base "${{ inputs.base_branch }}" \
+            --head "$BRANCH_NAME" \
+            --title "🎨 Design Tokens 업데이트 (Figma 동기화)" \
+            --body "## Figma → Design Tokens 동기화
+
+          Figma 파일에서 최신 변수를 가져와 디자인 토큰을 업데이트했습니다.
+
+          ### 📋 정보
+          | 항목 | 값 |
+          |------|-----|
+          | Figma 파일 | \`${{ inputs.figma_file_key }}\` |
+          | 동기화 시간 | \`$(date -u +"%Y-%m-%dT%H:%M:%SZ")\` |
+          | 실행자 | @${{ github.actor }} |
+          | 브랜치 | \`$BRANCH_NAME\` |
+
+          ### 📁 변경된 파일
+          \`\`\`
+          $CHANGED_FILES
+          \`\`\`
+
+          ### 📊 변경 요약
+          \`\`\`
+          $DIFF_SUMMARY
+          \`\`\`
+
+          ### ✅ 리뷰 체크리스트
+          - [ ] 토큰 값이 디자인 시스템과 일치하는지 확인
+          - [ ] 삭제/이름변경된 토큰이 코드에서 사용 중인지 확인
+          - [ ] 빌드 & 테스트 통과 확인
+
+          ---
+          > 🤖 이 PR은 GitHub Actions에 의해 자동 생성되었습니다." \
+            --label "design-tokens,automated"
+
+          echo "✅ PR이 성공적으로 생성되었습니다!"

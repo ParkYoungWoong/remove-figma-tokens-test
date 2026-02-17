@@ -1,0 +1,13 @@
+{
+  "name": "figma-token-sync",
+  "version": "1.0.0",
+  "description": "Figma Variables → Design Tokens 동기화 (GitHub Actions + PR 자동 생성)",
+  "private": true,
+  "scripts": {
+    "sync": "node scripts/sync-figma-to-tokens.js",
+    "test:transform": "node scripts/test-transform.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
